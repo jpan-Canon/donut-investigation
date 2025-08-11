@@ -2,7 +2,6 @@ core.*
 *.bin
 .nfs*
 .vscode/*
-dataset/*
 result/*
 misc/*
 !misc/*.png
