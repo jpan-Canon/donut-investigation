@@ -1,8 +1,51 @@
 import os
 import json
 import random
+from PIL import Image
+import numpy as np
 
-def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
+def resize_image(image_path, target_size=(2560, 1920)):
+    """
+    Resize and pad an image to fit the target size while maintaining aspect ratio
+    
+    Args:
+        image_path: Path to the input image
+        target_size: Tuple of (width, height) for the target size
+        
+    Returns:
+        PIL Image object with the resized and padded image
+    """
+    target_width, target_height = target_size
+    
+    # Open the image
+    with Image.open(image_path) as img:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        orig_width, orig_height = img.size
+        
+        # Calculate the scaling factor to fit within target size
+        scale_factor = min(target_width / orig_width, target_height / orig_height)
+        
+        # New dimensions
+        new_width = int(orig_width * scale_factor)
+        new_height = int(orig_height * scale_factor)
+        
+        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Create a new image with target size and padd with white background
+        padded_img = Image.new('RGB', target_size, (255, 255, 255))
+
+        #Center original image
+        pad_x = (target_width - new_width) // 2
+        pad_y = (target_height - new_height) // 2
+        
+        # Paste the resized image onto the padded background
+        padded_img.paste(img_resized, (pad_x, pad_y))
+        
+        return padded_img
+
+def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, resize_images=True, target_size=(2560, 1920)):
     """
     Create train/test/validation metadata.jsonl files from JSON mappings
     
@@ -13,6 +56,8 @@ def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_p
         train_ratio: Proportion for training set (default 0.7)
         val_ratio: Proportion for validation set (default 0.15)
         test_ratio: Proportion for test set (default 0.15)
+        resize_images: Whether to resize images during metadata creation (default True)
+        target_size: Target size for image resizing (default (2560, 1920))
     """
     
     # Create output directories
@@ -125,7 +170,9 @@ def copy_images_to_splits(jsons_folder_path, images_folder_path, output_folder_p
                     dest_path = os.path.join(dataset_images_path, image_filename)
                     
                     if os.path.exists(source_path):
-                        shutil.copy2(source_path, dest_path)
+                        # Resize and pad the image before saving
+                        resized_img = resize_image(source_path, target_size=(2560, 1920))
+                        resized_img.save(dest_path, 'PNG', quality=95)
                     else:
                         print(f"Warning: Source image not found: {source_path}")
                         
@@ -148,7 +195,9 @@ if __name__ == "__main__":
         output_folder_path=output_folder_path,
         train_ratio=0.7,
         val_ratio=0.15,
-        test_ratio=0.15
+        test_ratio=0.15,
+        resize_images=True,
+        target_size=(2560, 1920)
     )
     
     print(f"\nDataset split summary:")
