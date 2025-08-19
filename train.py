@@ -17,9 +17,11 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
+from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.plugins import CheckpointIO
 from pytorch_lightning.utilities import rank_zero_only
 from sconf import Config
+import wandb
 
 from donut import DonutDataset
 from lightning_module import DonutDataPLModule, DonutModelPLModule
@@ -77,7 +79,7 @@ def set_seed(seed):
         lightning_fabric.utilities.seed.seed_everything(seed, workers=True)
 
 
-def train(config):
+def train(config, use_wandb=False, wandb_project="donut-training", wandb_entity=None):
     set_seed(config.get("seed", 42))
 
     model_module = DonutModelPLModule(config)
@@ -119,12 +121,51 @@ def train(config):
     data_module.train_datasets = datasets["train"]
     data_module.val_datasets = datasets["validation"]
 
+    # Initialize loggers
+    loggers = []
+    
+    # Always use TensorBoard logger
     logger = TensorBoardLogger(
         save_dir=config.result_path,
         name=config.exp_name,
         version=config.exp_version,
         default_hp_metric=False,
     )
+    loggers.append(logger)
+    
+    # Conditionally add wandb logger
+    if use_wandb:
+        try:
+            # Initialize wandb with additional configuration
+            wandb.init(
+                project=wandb_project,
+                entity=wandb_entity,
+                name=f"{config.exp_name}_{config.exp_version}",
+                config={
+                    "exp_name": config.exp_name,
+                    "exp_version": config.exp_version,
+                    "max_epochs": config.max_epochs,
+                    "max_steps": config.max_steps,
+                    "learning_rate": config.get("lr", "unknown"),
+                    "batch_size": config.get("train_batch_sizes", "unknown"),
+                },
+                # Enable code saving for better experiment tracking
+                settings=wandb.Settings(save_code=True)
+            )
+            
+            wandb_logger = WandbLogger(
+                project=wandb_project,
+                entity=wandb_entity,
+                name=f"{config.exp_name}_{config.exp_version}",
+                save_dir=config.result_path,
+                log_model=True,
+            )
+            loggers.append(wandb_logger)
+            print(f"WandB logging enabled - Project: {wandb_project}, Entity: {wandb_entity}")
+            
+        except Exception as e:
+            print(f"  Warning: Failed to initialize wandb: {e}")
+            print("   Continuing with TensorBoard logging only...")
 
     lr_callback = LearningRateMonitor(logging_interval="step")
 
@@ -153,7 +194,7 @@ def train(config):
         gradient_clip_val=config.gradient_clip_val,
         precision=16,
         num_sanity_val_steps=0,
-        logger=logger,
+        logger=loggers,  # Use TensorBoard and optionally WandB loggers
         callbacks=[lr_callback, checkpoint_callback, bar],
     )
 
@@ -164,6 +205,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--exp_version", type=str, required=False)
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="donut-training-SRFUND", help="WandB project name")
+    parser.add_argument("--wandb_entity", type=str, default="ffotouhi-canon-usa", help="WandB entity/team name")
     args, left_argv = parser.parse_known_args()
 
     config = Config(args.config)
@@ -173,4 +217,4 @@ if __name__ == "__main__":
     config.exp_version = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") if not args.exp_version else args.exp_version
 
     save_config_file(config, Path(config.result_path) / config.exp_name / config.exp_version)
-    train(config)
+    train(config, use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_entity=args.wandb_entity)

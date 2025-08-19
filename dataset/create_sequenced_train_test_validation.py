@@ -45,14 +45,43 @@ def resize_image(image_path, target_size=(960, 1280)):
         
         return padded_img
 
-def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, resize_images=True, target_size=(2560, 1920)):
+def convert_json_to_donut_sequence(ground_truth_parse, task_name="SRFUND"):
     """
-    Create train/test/validation metadata.jsonl files from JSON mappings
+    Convert JSON structure to Donut text sequence format
+    
+    Args:
+        ground_truth_parse: Dictionary containing the parsed ground truth
+        task_name: Name of the task (default: "SRFUND")
+        
+    Returns:
+        String in Donut sequence format
+    """
+    donut_sequence = f"<s_{task_name}>"
+    
+    # Convert each key-value pair to Donut format
+    for key, value in ground_truth_parse.items():
+        # Clean the key and value
+        clean_key = str(key).strip()
+        clean_value = str(value).strip()
+        
+        # Add to sequence
+        donut_sequence += f"<s_{clean_key}>{clean_value}</s_{clean_key}>"
+    
+    donut_sequence += f"</s_{task_name}>"
+    
+    return donut_sequence
+
+def create_sequenced_metadata_files(jsons_folder_path, images_folder_path, output_folder_path, 
+                                   task_name="SRFUND", train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, 
+                                   resize_images=True, target_size=(2560, 1920)):
+    """
+    Create train/test/validation metadata.jsonl files with Donut sequence format
     
     Args:
         jsons_folder_path: Path to folder containing individual JSON files
         images_folder_path: Path to folder containing corresponding images
         output_folder_path: Path where to save the metadata files
+        task_name: Name of the task for Donut sequence (default: "SRFUND")
         train_ratio: Proportion for training set (default 0.7)
         val_ratio: Proportion for validation set (default 0.15)
         test_ratio: Proportion for test set (default 0.15)
@@ -100,9 +129,10 @@ def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_p
     for dataset_name, file_list in datasets:
         metadata_path = os.path.join(output_folder_path, dataset_name, "metadata.jsonl")
         
-        print(f"\nCreating {dataset_name} metadata...")
+        print(f"\nCreating {dataset_name} metadata with Donut sequence format...")
         
         with open(metadata_path, 'w', encoding='utf-8') as f:
+            processed_count = 0
             for json_filename in file_list:
                 json_path = os.path.join(jsons_folder_path, json_filename)
                 
@@ -111,33 +141,45 @@ def create_metadata_files(jsons_folder_path, images_folder_path, output_folder_p
                         ground_truth_parse = json.load(json_file)
                     
                     image_filename = json_filename.replace('.json', '.png')
-                    
-
                     image_path = os.path.join(images_folder_path, image_filename)
+                    
                     if not os.path.exists(image_path):
                         print(f"Warning: Image {image_filename} not found, skipping...")
                         continue
                     
+                    # Convert JSON to Donut sequence format
+                    donut_sequence = convert_json_to_donut_sequence(ground_truth_parse, task_name)
                     
+                    # Create metadata entry in correct Donut format - wrap sequence in gt_parse
                     metadata_entry = {
                         "file_name": image_filename,
-                        "ground_truth": json.dumps({"gt_parse": ground_truth_parse}, separators=(',', ':'), ensure_ascii=False)
+                        "ground_truth": json.dumps({"gt_parse": {"text_sequence": donut_sequence}}, separators=(',', ':'), ensure_ascii=False)
                     }
                     
-
-                    f.write(json.dumps(metadata_entry) + "\n")
+                    # Write to file
+                    f.write(json.dumps(metadata_entry, separators=(',', ':'), ensure_ascii=False) + "\n")
+                    processed_count += 1
+                    
+                    # Show first few examples
+                    if processed_count <= 3:
+                        print(f"Example {processed_count}:")
+                        print(f"  File: {image_filename}")
+                        print(f"  Ground truth (first 100 chars): {donut_sequence[:100]}...")
+                        print()
                     
                 except Exception as e:
                     print(f"Error processing {json_filename}: {e}")
                     continue
         
         print(f"Saved {dataset_name} metadata to: {metadata_path}")
+        print(f"Processed {processed_count} files for {dataset_name}")
     
     return {
         "train_count": len(train_files),
         "validation_count": len(val_files), 
         "test_count": len(test_files),
-        "total_count": total_files
+        "total_count": total_files,
+        "task_name": task_name
     }
 
 def copy_images_to_splits(jsons_folder_path, images_folder_path, output_folder_path, target_size=(960, 1280)):
@@ -185,17 +227,56 @@ def copy_images_to_splits(jsons_folder_path, images_folder_path, output_folder_p
         
         print(f"Images copied to: {dataset_images_path}")
 
+def validate_metadata_format(metadata_file_path, expected_task_name="SRFUND"):
+    """
+    Validate that the metadata file has the correct Donut sequence format
+    
+    Args:
+        metadata_file_path: Path to the metadata.jsonl file
+        expected_task_name: Expected task name in the sequences
+    """
+    print(f"\nValidating metadata format: {metadata_file_path}")
+    
+    if not os.path.exists(metadata_file_path):
+        print(f"File not found: {metadata_file_path}")
+        return False
+    
+    with open(metadata_file_path, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            if i >= 3:  # Only check first 3 lines
+                break
+                
+            try:
+                entry = json.loads(line.strip())
+                ground_truth = entry.get("ground_truth", "")
+                
+                print(f"Line {i+1}:")
+                print(f"  File: {entry.get('file_name', 'N/A')}")
+                print(f"  Starts with <s_{expected_task_name}>: {ground_truth.startswith(f'<s_{expected_task_name}>')}")
+                print(f"  Ends with </s_{expected_task_name}>: {ground_truth.endswith(f'</s_{expected_task_name}>')}")
+                print(f"  Length: {len(ground_truth)} characters")
+                print(f"  Preview: {ground_truth[:150]}...")
+                print()
+                
+            except Exception as e:
+                print(f"Error parsing line {i+1}: {e}")
+                return False
+    
+    print("Validation completed!")
+    return True
+
 if __name__ == "__main__":
     jsons_folder_path = "../../../Data/SRFUND/donut_format/individual_jsons/"
     images_folder_path = "../../../Data/SRFUND/dataset/images/"
-    output_folder_path = "../../../Data/SRFUND/donut_format/"
+    output_folder_path = "../../../Data/SRFUND/donut_format_sequenced/"
+    task_name = "SRFUND"
     
-    
-    print("Creating metadata files...")
-    results = create_metadata_files(
+    print("Creating metadata files with Donut sequence format...")
+    results = create_sequenced_metadata_files(
         jsons_folder_path=jsons_folder_path,
         images_folder_path=images_folder_path,
         output_folder_path=output_folder_path,
+        task_name=task_name,
         train_ratio=0.7,
         val_ratio=0.15,
         test_ratio=0.15,
@@ -208,6 +289,16 @@ if __name__ == "__main__":
     print(f"Validation: {results['validation_count']} files") 
     print(f"Test: {results['test_count']} files")
     print(f"Total: {results['total_count']} files")
+    print(f"Task name: {results['task_name']}")
     
     print(f"\nCopying images into splits...")
     copy_images_to_splits(jsons_folder_path, images_folder_path, output_folder_path, target_size=(960, 1280))
+    
+    # Validate the generated metadata
+    print(f"\n" + "="*50)
+    print("VALIDATION")
+    print("="*50)
+    
+    for dataset_name in ["train", "validation", "test"]:
+        metadata_path = os.path.join(output_folder_path, dataset_name, "metadata.jsonl")
+        validate_metadata_format(metadata_path, task_name)
